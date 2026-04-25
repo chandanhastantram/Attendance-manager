@@ -1,12 +1,13 @@
 import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { Home, BookOpen, Calendar, LayoutGrid } from 'lucide-react';
+import { Home, BookOpen, Calendar, LayoutGrid, Globe } from 'lucide-react';
 
 const navItems = [
   { path: '/',           icon: Home,       label: 'Today'     },
   { path: '/timetable',  icon: LayoutGrid, label: 'Timetable' },
   { path: '/calendar',   icon: Calendar,   label: 'Calendar'  },
   { path: '/subjects',   icon: BookOpen,   label: 'Subjects'  },
+  { path: '/portal',     icon: Globe,      label: 'Portal'    },
 ];
 
 export default function BottomNav() {

@@ -10,6 +10,7 @@ import CalendarPage from './pages/CalendarPage.jsx';
 import ReportsPage from './pages/ReportsPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import ScanPage from './pages/ScanPage.jsx';
+import PortalPage from './pages/PortalPage.jsx';
 import useSettingsStore from './stores/useSettingsStore.js';
 
 export default function App() {
@@ -29,6 +30,7 @@ export default function App() {
             <Route path="/calendar"  element={<CalendarPage />} />
             <Route path="/reports"   element={<ReportsPage />} />
             <Route path="/scan"      element={<ScanPage />} />
+            <Route path="/portal"    element={<PortalPage />} />
             <Route path="/settings"  element={<SettingsPage />} />
           </Routes>
         </div>

@@ -8,6 +8,7 @@ export default function SubjectForm({ subject, onClose }) {
   const [shortName, setShortName] = useState('');
   const [color, setColor] = useState(SUBJECT_COLORS[0]);
   const [criteria, setCriteria] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const addSubject = useSubjectStore(s => s.addSubject);
   const updateSubject = useSubjectStore(s => s.updateSubject);
@@ -24,23 +25,29 @@ export default function SubjectForm({ subject, onClose }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim() || isSubmitting) return;
 
-    const data = {
-      name: name.trim(),
-      shortName: shortName.trim() || name.trim().substring(0, 3).toUpperCase(),
-      color,
-      criteria: criteria ? parseInt(criteria) : null
-    };
+    setIsSubmitting(true);
+    try {
+      const data = {
+        name: name.trim(),
+        shortName: shortName.trim() || name.trim().substring(0, 3).toUpperCase(),
+        color,
+        criteria: criteria ? parseInt(criteria) : null
+      };
 
-    if (subject) {
-      await updateSubject(subject.id, data);
-      addToast('Subject updated', 'success');
-    } else {
-      await addSubject(data);
-      addToast('Subject added', 'success');
+      if (subject) {
+        await updateSubject(subject.id, data);
+        addToast('Subject updated', 'success');
+      } else {
+        await addSubject(data);
+        addToast('Subject added', 'success');
+      }
+      onClose();
+    } catch (error) {
+      console.error(error);
+      setIsSubmitting(false);
     }
-    onClose();
   };
 
   return (
@@ -112,11 +119,11 @@ export default function SubjectForm({ subject, onClose }) {
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <button type="button" className="btn btn-secondary" onClick={onClose} style={{ flex: 1 }}>
+        <button type="button" className="btn btn-secondary" onClick={onClose} style={{ flex: 1 }} disabled={isSubmitting}>
           Cancel
         </button>
-        <button type="submit" className="btn btn-primary" style={{ flex: 1 }} id="save-subject-btn">
-          {subject ? 'Update' : 'Add Subject'}
+        <button type="submit" className="btn btn-primary" style={{ flex: 1 }} id="save-subject-btn" disabled={isSubmitting}>
+          {subject ? 'Update' : isSubmitting ? 'Saving...' : 'Add Subject'}
         </button>
       </div>
     </form>
