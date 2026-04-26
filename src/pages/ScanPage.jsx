@@ -9,15 +9,87 @@ import useSettingsStore from '../stores/useSettingsStore.js';
 import Modal from '../components/common/Modal.jsx';
 import { DAYS, SUBJECT_COLORS } from '../db/database.js';
 import { format } from 'date-fns';
+/* ── OCR parsing helpers ─────────────────────────────────────── */
+function parseTimetableText(text, existingSubjects) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const timeRegex = /(\d{1,2})[:\.](\d{2})\s*(am|pm|AM|PM)?/gi;
+  const dayRegex = /\b(mon|tue|wed|thu|fri|sat|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/gi;
 
+  const parsed = [];
+  const subjectNames = new Set(existingSubjects.map(s => s.name.toLowerCase()));
 
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = error => reject(error);
-  });
+  for (const line of lines) {
+    const times = [];
+    let match;
+    const re = new RegExp(timeRegex.source, 'gi');
+    while ((match = re.exec(line)) !== null) {
+      let h = parseInt(match[1]);
+      const m = parseInt(match[2]);
+      const period = match[3]?.toLowerCase();
+      if (period === 'pm' && h < 12) h += 12;
+      if (period === 'am' && h === 12) h = 0;
+      times.push(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`);
+    }
+
+    const dayMatch = line.match(dayRegex);
+    const day = dayMatch ? normDay(dayMatch[0]) : null;
+
+    let subName = line
+      .replace(timeRegex, '')
+      .replace(dayRegex, '')
+      .replace(/[-–—:,|]/g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ');
+
+    if (subName.length > 2 && subName.length < 50) {
+      parsed.push({
+        subjectName: subName,
+        day: day,
+        startTime: times[0] || null,
+        endTime: times[1] || null,
+        confidence: calcConf(subName, times, day),
+        isKnown: subjectNames.has(subName.toLowerCase())
+      });
+    }
+  }
+
+  return parsed.filter(p => p.confidence > 0.2);
+}
+
+function parseAttendanceText(text, existingSubjects) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const numRe = /\d+/g;
+  const parsed = [];
+
+  for (const line of lines) {
+    const nums = line.match(numRe)?.map(Number) || [];
+    if (nums.length < 2) continue;
+
+    const subName = line.replace(numRe, '').replace(/[-–—:|,\/]/g, ' ').trim().replace(/\s+/g,' ');
+    if (subName.length < 2 || subName.length > 60) continue;
+
+    const held     = nums.length >= 2 ? Math.max(nums[0], nums[1]) : nums[0];
+    const attended = nums.length >= 2 ? Math.min(nums[0], nums[1]) : nums[0];
+    const pct = held > 0 ? Math.round((attended/held)*100) : 0;
+
+    parsed.push({ subjectName: subName, held, attended, missed: held - attended, pct });
+  }
+
+  return parsed.filter(p => p.held > 0 && p.attended >= 0 && p.attended <= p.held);
+}
+
+function normDay(d) {
+  const map = { mon:0, monday:0, tue:1, tuesday:1, wed:2, wednesday:2, thu:3, thursday:3, fri:4, friday:4, sat:5, saturday:5 };
+  return map[d.toLowerCase()] ?? null;
+}
+
+function calcConf(name, times, day) {
+  let score = 0.3;
+  if (times.length >= 1) score += 0.3;
+  if (times.length >= 2) score += 0.1;
+  if (day !== null) score += 0.2;
+  if (name.split(' ').length <= 4) score += 0.1;
+  return Math.min(score, 1);
 }
 
 /* ── Main Scan Page ─────────────────────────────────────────── */
