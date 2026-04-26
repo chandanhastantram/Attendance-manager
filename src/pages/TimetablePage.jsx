@@ -11,7 +11,7 @@ import { fmt12 } from '../utils/attendance.js';
 import { DAY_SHORT, DAYS } from '../db/database.js';
 import db from '../db/database.js';
 
-import { parseTimetableWithGroq } from '../utils/groqVision.js';
+import { parseWithGroq } from '../utils/groqVision.js';
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -138,7 +138,7 @@ function UploadModal({ isOpen, onClose, subjects, onApply }) {
 
     try {
       const base64 = await fileToBase64(file);
-      const slots = await parseTimetableWithGroq(base64, subjects, settings.groqApiKey);
+      const slots = await parseWithGroq(base64, subjects, settings.groqApiKey, 'timetable');
       
       setParsedSlots(slots);
       setPhase(slots.length > 0 ? 'review' : 'manual');
