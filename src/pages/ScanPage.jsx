@@ -9,6 +9,8 @@ import useSettingsStore from '../stores/useSettingsStore.js';
 import Modal from '../components/common/Modal.jsx';
 import { DAYS, SUBJECT_COLORS } from '../db/database.js';
 import { format } from 'date-fns';
+import Tesseract from 'tesseract.js';
+
 /* ── OCR parsing helpers ─────────────────────────────────────── */
 function parseTimetableText(text, existingSubjects) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -175,15 +177,11 @@ export default function ScanPage() {
     setMode('processing');
     setOcring(true);
     try {
-      const { createWorker } = await import('tesseract.js');
-      const worker = await createWorker('eng', 1, { logger: () => {} });
-      await worker.setParameters({
-        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .:-/|()%'
+      const result = await Tesseract.recognize(imageData, 'eng', {
+        logger: () => {}
       });
-      const { data: { text } } = await worker.recognize(imageData);
-      await worker.terminate();
-      setOcrText(text);
-      parseResults(text);
+      setOcrText(result.data.text);
+      parseResults(result.data.text);
     } catch (err) {
       addToast('OCR failed: ' + err.message, 'error');
       setMode('choose');
