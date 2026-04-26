@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, Plus, Trash2, Image, Loader, Check, X, LayoutGrid, FileText } from 'lucide-react';
-import Tesseract from 'tesseract.js';
 import useSubjectStore from '../stores/useSubjectStore.js';
 import useTimetableStore from '../stores/useTimetableStore.js';
 import useSettingsStore from '../stores/useSettingsStore.js';
@@ -12,83 +11,15 @@ import { fmt12 } from '../utils/attendance.js';
 import { DAY_SHORT, DAYS } from '../db/database.js';
 import db from '../db/database.js';
 
-// ── OCR TEXT PARSER ────────────────────────────────────────────────────────
-function parseTimetableFromOCR(text, subjects) {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  const subjectNames = subjects.map(s => s.name.toLowerCase());
-  const results = [];
+import { parseTimetableWithGroq } from '../utils/groqVision.js';
 
-  // Try to find subject names mentioned alongside day abbreviations
-  const DAY_PATTERNS = {
-    0: /\bmon(day)?\b/i,
-    1: /\btue(sday)?\b/i,
-    2: /\bwed(nesday)?\b/i,
-    3: /\bthu(rsday)?\b/i,
-    4: /\bfri(day)?\b/i,
-    5: /\bsat(urday)?\b/i,
-  };
-
-  const TIME_RE = /\b(\d{1,2})[:\.](\d{2})\s*(am|pm)?\b/gi;
-
-  for (const line of lines) {
-    const lowerLine = line.toLowerCase();
-
-    // Find subject
-    let matchedSubject = null;
-    for (const sub of subjects) {
-      if (lowerLine.includes(sub.name.toLowerCase().substring(0, 5))) {
-        matchedSubject = sub;
-        break;
-      }
-    }
-    if (!matchedSubject) continue;
-
-    // Find day
-    let dayIndex = null;
-    for (const [idx, pattern] of Object.entries(DAY_PATTERNS)) {
-      if (pattern.test(line)) { dayIndex = parseInt(idx); break; }
-    }
-
-    // Find times
-    const times = [...line.matchAll(TIME_RE)];
-    let startTime = null, endTime = null;
-    if (times.length >= 2) {
-      startTime = formatTimeStr(times[0]);
-      endTime   = formatTimeStr(times[1]);
-    } else if (times.length === 1) {
-      startTime = formatTimeStr(times[0]);
-    }
-
-    if (matchedSubject && dayIndex !== null && startTime) {
-      results.push({
-        id: `ocr-${Date.now()}-${Math.random()}`,
-        subjectId: matchedSubject.id,
-        subjectName: matchedSubject.name,
-        subjectColor: matchedSubject.color,
-        day: dayIndex,
-        dayName: DAY_SHORT[dayIndex],
-        startTime,
-        endTime: endTime || incrementHour(startTime),
-        room: '',
-        confirmed: true,
-      });
-    }
-  }
-  return results;
-}
-
-function formatTimeStr(match) {
-  let h = parseInt(match[1]);
-  const m = parseInt(match[2]) || 0;
-  const period = (match[3] || '').toLowerCase();
-  if (period === 'pm' && h !== 12) h += 12;
-  if (period === 'am' && h === 12) h = 0;
-  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
-}
-
-function incrementHour(t) {
-  const [h, m] = t.split(':').map(Number);
-  return `${String((h + 1) % 24).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = error => reject(error);
+  });
 }
 
 // ── WEEKLY GRID VIEW ───────────────────────────────────────────────────────
@@ -179,19 +110,15 @@ function WeeklyGrid({ slots, subjects, onDeleteSlot }) {
 function UploadModal({ isOpen, onClose, subjects, onApply }) {
   const [phase, setPhase] = useState('select'); // select | scanning | review | manual
   const [imageUrl, setImageUrl] = useState(null);
-  const [ocrProgress, setOcrProgress] = useState(0);
-  const [ocrStatusText, setOcrStatusText] = useState('Initializing...');
   const [parsedSlots, setParsedSlots] = useState([]);
-  const [ocrText, setOcrText] = useState('');
   const fileRef = useRef(null);
   const addToast = useToastStore(s => s.addToast);
+  const settings = useSettingsStore(s => s.settings);
 
   const reset = () => {
     setPhase('select');
     setImageUrl(null);
-    setOcrProgress(0);
     setParsedSlots([]);
-    setOcrText('');
   };
 
   const handleClose = () => { reset(); onClose(); };
@@ -199,26 +126,23 @@ function UploadModal({ isOpen, onClose, subjects, onApply }) {
   const handleFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    
+    if (!settings.groqApiKey) {
+      addToast('Please enter your Groq API Key in Settings first.', 'error');
+      return;
+    }
+
     const url = URL.createObjectURL(file);
     setImageUrl(url);
     setPhase('scanning');
 
     try {
-      const result = await Tesseract.recognize(url, 'eng', {
-        logger: m => {
-          // m.status can be "loading tesseract core", "initializing tesseract", "downloading eng.traineddata", "recognizing text"
-          setOcrStatusText(m.status.charAt(0).toUpperCase() + m.status.slice(1));
-          if (m.progress) {
-            setOcrProgress(Math.round(m.progress * 100));
-          }
-        }
-      });
-      const text = result.data.text;
-      setOcrText(text);
-      const slots = parseTimetableFromOCR(text, subjects);
+      const base64 = await fileToBase64(file);
+      const slots = await parseTimetableWithGroq(base64, subjects, settings.groqApiKey);
+      
       setParsedSlots(slots);
       setPhase(slots.length > 0 ? 'review' : 'manual');
-      if (slots.length === 0) addToast('Could not auto-detect classes. Please add manually.', 'info');
+      if (slots.length === 0) addToast('Could not auto-detect any classes. Please add manually.', 'info');
     } catch (err) {
       addToast('Scan failed: ' + err.message, 'error');
       setPhase('select');
@@ -270,16 +194,10 @@ function UploadModal({ isOpen, onClose, subjects, onApply }) {
             <img src={imageUrl} alt="Timetable preview"
               style={{ width: '100%', borderRadius: 12, marginBottom: 20, maxHeight: 200, objectFit: 'contain' }} />
           )}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 12 }}>
-            <Loader size={20} className="spin" color="var(--primary)" />
-            <span style={{ fontWeight: 600, fontSize: '0.9375rem' }}>{ocrStatusText}…</span>
-          </div>
-          <div className="pbar-wrap" style={{ margin: '0 auto', maxWidth: 240 }}>
-            <div className="pbar-fill" style={{ width: `${ocrProgress}%`, background: 'var(--primary)' }} />
-          </div>
-          <div style={{ marginTop: 8, fontSize: '0.75rem', color: 'var(--text-2)' }}>{ocrProgress}%</div>
-          <div style={{ marginTop: 12, fontSize: '0.6875rem', color: 'var(--text-3)' }}>
-            First time scan downloads ~25MB of offline language data.
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 12 }}>
+            <Loader size={28} className="spin" color="var(--primary)" style={{ marginBottom: 8 }} />
+            <span style={{ fontWeight: 600, fontSize: '0.9375rem' }}>AI is analyzing timetable...</span>
+            <div style={{ marginTop: 4, fontSize: '0.75rem', color: 'var(--text-2)' }}>This usually takes 2-5 seconds.</div>
           </div>
         </div>
       )}

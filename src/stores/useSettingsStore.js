@@ -11,6 +11,7 @@ const DEFAULT_SETTINGS = {
   language: 'en',
   semesterStartDate: null,
   semesterEndDate: null,
+  groqApiKey: '', 
 };
 
 const useSettingsStore = create((set, get) => ({

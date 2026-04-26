@@ -150,6 +150,22 @@ export default function SettingsPage() {
         )}
       </Section>
 
+      <Section title="AI Integrations" delay={0.08}>
+        <div className="input-group">
+          <label>Groq API Key (Timetable Scanner)</label>
+          <input 
+            type="password" 
+            className="input" 
+            value={settings.groqApiKey || ''}
+            onChange={(e) => updateSettings({ groqApiKey: e.target.value })}
+            placeholder="gsk_..."
+          />
+          <div style={{ fontSize: '0.6875rem', color: 'var(--text-3)', marginTop: 4 }}>
+            Required for AI Timetable scanning. Get a free key at <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer" style={{color:'var(--primary)'}}>console.groq.com</a>.
+          </div>
+        </div>
+      </Section>
+
       {/* Export / Backup */}
       <Section title="Data & Backup" delay={0.1}>
         <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
