@@ -180,6 +180,7 @@ function UploadModal({ isOpen, onClose, subjects, onApply }) {
   const [phase, setPhase] = useState('select'); // select | scanning | review | manual
   const [imageUrl, setImageUrl] = useState(null);
   const [ocrProgress, setOcrProgress] = useState(0);
+  const [ocrStatusText, setOcrStatusText] = useState('Initializing...');
   const [parsedSlots, setParsedSlots] = useState([]);
   const [ocrText, setOcrText] = useState('');
   const fileRef = useRef(null);
@@ -204,7 +205,13 @@ function UploadModal({ isOpen, onClose, subjects, onApply }) {
 
     try {
       const result = await Tesseract.recognize(url, 'eng', {
-        logger: m => { if (m.status === 'recognizing text') setOcrProgress(Math.round(m.progress * 100)); }
+        logger: m => {
+          // m.status can be "loading tesseract core", "initializing tesseract", "downloading eng.traineddata", "recognizing text"
+          setOcrStatusText(m.status.charAt(0).toUpperCase() + m.status.slice(1));
+          if (m.progress) {
+            setOcrProgress(Math.round(m.progress * 100));
+          }
+        }
       });
       const text = result.data.text;
       setOcrText(text);
@@ -265,12 +272,15 @@ function UploadModal({ isOpen, onClose, subjects, onApply }) {
           )}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 12 }}>
             <Loader size={20} className="spin" color="var(--primary)" />
-            <span style={{ fontWeight: 600, fontSize: '0.9375rem' }}>Reading timetable…</span>
+            <span style={{ fontWeight: 600, fontSize: '0.9375rem' }}>{ocrStatusText}…</span>
           </div>
           <div className="pbar-wrap" style={{ margin: '0 auto', maxWidth: 240 }}>
             <div className="pbar-fill" style={{ width: `${ocrProgress}%`, background: 'var(--primary)' }} />
           </div>
           <div style={{ marginTop: 8, fontSize: '0.75rem', color: 'var(--text-2)' }}>{ocrProgress}%</div>
+          <div style={{ marginTop: 12, fontSize: '0.6875rem', color: 'var(--text-3)' }}>
+            First time scan downloads ~25MB of offline language data.
+          </div>
         </div>
       )}
 
