@@ -10,7 +10,6 @@ import Modal from '../components/common/Modal.jsx';
 import { DAYS, SUBJECT_COLORS } from '../db/database.js';
 import { format } from 'date-fns';
 
-import { parseWithGroq } from '../utils/groqVision.js';
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -40,6 +39,7 @@ export default function ScanPage() {
   const [mode, setMode] = useState('choose'); // choose | camera | processing | results
   const [scanType, setScanType]     = useState('timetable'); // timetable | attendance | subjects
   const [capturedImg, setCapturedImg] = useState(null);
+  const [ocrText, setOcrText]       = useState('');
   const [parsedData, setParsedData] = useState([]);
   const [selected, setSelected]     = useState({});
   const [applying, setApplying]     = useState(false);
@@ -100,27 +100,37 @@ export default function ScanPage() {
   };
 
   const runOCR = async (imageData) => {
-    if (!settings.groqApiKey) {
-      addToast('Please enter your Groq API Key in Settings first.', 'error');
-      return;
-    }
-
     setMode('processing');
     setOcring(true);
     try {
-      const data = await parseWithGroq(imageData, subjects, settings.groqApiKey, scanType);
-      
-      setParsedData(data);
-      // Pre-select all items
-      const sel = {};
-      data.forEach((_, i) => { sel[i] = true; });
-      setSelected(sel);
-      setMode('results');
+      const { createWorker } = await import('tesseract.js');
+      const worker = await createWorker('eng', 1, { logger: () => {} });
+      await worker.setParameters({
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .:-/|()%'
+      });
+      const { data: { text } } = await worker.recognize(imageData);
+      await worker.terminate();
+      setOcrText(text);
+      parseResults(text);
     } catch (err) {
-      addToast('Scan failed: ' + err.message, 'error');
+      addToast('OCR failed: ' + err.message, 'error');
       setMode('choose');
     }
     setOcring(false);
+  };
+
+  const parseResults = (text) => {
+    let data = [];
+    if (scanType === 'timetable' || scanType === 'subjects') {
+      data = parseTimetableText(text, subjects);
+    } else if (scanType === 'attendance') {
+      data = parseAttendanceText(text, subjects);
+    }
+    setParsedData(data);
+    const sel = {};
+    data.forEach((_, i) => { sel[i] = true; });
+    setSelected(sel);
+    setMode('results');
   };
 
   const applyResults = async () => {
@@ -182,6 +192,7 @@ export default function ScanPage() {
 
   const reset = () => {
     setCapturedImg(null);
+    setOcrText('');
     setParsedData([]);
     setSelected({});
     setMode('choose');

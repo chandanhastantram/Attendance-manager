@@ -11,15 +11,54 @@ import { fmt12 } from '../utils/attendance.js';
 import { DAY_SHORT, DAYS } from '../db/database.js';
 import db from '../db/database.js';
 
-import { parseWithGroq } from '../utils/groqVision.js';
+import Tesseract from 'tesseract.js';
 
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = error => reject(error);
-  });
+// ── OCR TEXT PARSER ────────────────────────────────────────────────────────
+function parseTimetableFromOCR(text, subjects) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const results = [];
+  const DAY_PATTERNS = {
+    0: /\bmon(day)?\b/i, 1: /\btue(sday)?\b/i, 2: /\bwed(nesday)?\b/i,
+    3: /\bthu(rsday)?\b/i, 4: /\bfri(day)?\b/i, 5: /\bsat(urday)?\b/i,
+  };
+  const TIME_RE = /\b(\d{1,2})[:\.](\d{2})\s*(am|pm)?\b/gi;
+  for (const line of lines) {
+    let matchedSubject = null;
+    for (const sub of subjects) {
+      if (line.toLowerCase().includes(sub.name.toLowerCase().substring(0, 5))) {
+        matchedSubject = sub; break;
+      }
+    }
+    if (!matchedSubject) continue;
+    let dayIndex = null;
+    for (const [idx, pattern] of Object.entries(DAY_PATTERNS)) {
+      if (pattern.test(line)) { dayIndex = parseInt(idx); break; }
+    }
+    const times = [...line.matchAll(TIME_RE)];
+    let startTime = times[0] ? fmtT(times[0]) : null;
+    let endTime = times[1] ? fmtT(times[1]) : null;
+    if (matchedSubject && dayIndex !== null && startTime) {
+      results.push({
+        id: `ocr-${Date.now()}-${Math.random()}`,
+        subjectId: matchedSubject.id, subjectName: matchedSubject.name,
+        subjectColor: matchedSubject.color, day: dayIndex,
+        dayName: DAY_SHORT[dayIndex], startTime,
+        endTime: endTime || addHr(startTime), room: '', confirmed: true,
+      });
+    }
+  }
+  return results;
+}
+function fmtT(m) {
+  let h = parseInt(m[1]); const min = parseInt(m[2]) || 0;
+  const p = (m[3] || '').toLowerCase();
+  if (p === 'pm' && h !== 12) h += 12;
+  if (p === 'am' && h === 12) h = 0;
+  return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+}
+function addHr(t) {
+  const [h, m] = t.split(':').map(Number);
+  return `${String((h+1)%24).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
 }
 
 // ── WEEKLY GRID VIEW ───────────────────────────────────────────────────────
@@ -110,39 +149,33 @@ function WeeklyGrid({ slots, subjects, onDeleteSlot }) {
 function UploadModal({ isOpen, onClose, subjects, onApply }) {
   const [phase, setPhase] = useState('select'); // select | scanning | review | manual
   const [imageUrl, setImageUrl] = useState(null);
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [ocrStatus, setOcrStatus] = useState('Initializing...');
   const [parsedSlots, setParsedSlots] = useState([]);
   const fileRef = useRef(null);
   const addToast = useToastStore(s => s.addToast);
-  const settings = useSettingsStore(s => s.settings);
 
-  const reset = () => {
-    setPhase('select');
-    setImageUrl(null);
-    setParsedSlots([]);
-  };
-
+  const reset = () => { setPhase('select'); setImageUrl(null); setOcrProgress(0); setParsedSlots([]); };
   const handleClose = () => { reset(); onClose(); };
 
   const handleFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
-    if (!settings.groqApiKey) {
-      addToast('Please enter your Groq API Key in Settings first.', 'error');
-      return;
-    }
-
     const url = URL.createObjectURL(file);
     setImageUrl(url);
     setPhase('scanning');
-
+    setOcrProgress(0);
     try {
-      const base64 = await fileToBase64(file);
-      const slots = await parseWithGroq(base64, subjects, settings.groqApiKey, 'timetable');
-      
+      const result = await Tesseract.recognize(url, 'eng', {
+        logger: m => {
+          setOcrStatus(m.status.charAt(0).toUpperCase() + m.status.slice(1));
+          if (m.progress) setOcrProgress(Math.round(m.progress * 100));
+        }
+      });
+      const slots = parseTimetableFromOCR(result.data.text, subjects);
       setParsedSlots(slots);
       setPhase(slots.length > 0 ? 'review' : 'manual');
-      if (slots.length === 0) addToast('Could not auto-detect any classes. Please add manually.', 'info');
+      if (slots.length === 0) addToast('Could not auto-detect classes. Try adding manually.', 'info');
     } catch (err) {
       addToast('Scan failed: ' + err.message, 'error');
       setPhase('select');
@@ -194,11 +227,15 @@ function UploadModal({ isOpen, onClose, subjects, onApply }) {
             <img src={imageUrl} alt="Timetable preview"
               style={{ width: '100%', borderRadius: 12, marginBottom: 20, maxHeight: 200, objectFit: 'contain' }} />
           )}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 12 }}>
-            <Loader size={28} className="spin" color="var(--primary)" style={{ marginBottom: 8 }} />
-            <span style={{ fontWeight: 600, fontSize: '0.9375rem' }}>AI is analyzing timetable...</span>
-            <div style={{ marginTop: 4, fontSize: '0.75rem', color: 'var(--text-2)' }}>This usually takes 2-5 seconds.</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 12 }}>
+            <Loader size={20} className="spin" color="var(--primary)" />
+            <span style={{ fontWeight: 600, fontSize: '0.9375rem' }}>{ocrStatus}…</span>
           </div>
+          <div className="pbar-wrap" style={{ margin: '0 auto', maxWidth: 240 }}>
+            <div className="pbar-fill" style={{ width: `${ocrProgress}%`, background: 'var(--primary)' }} />
+          </div>
+          <div style={{ marginTop: 8, fontSize: '0.75rem', color: 'var(--text-2)' }}>{ocrProgress}%</div>
+          <div style={{ marginTop: 10, fontSize: '0.6875rem', color: 'var(--text-3)' }}>First scan downloads ~25MB of language data.</div>
         </div>
       )}
 
