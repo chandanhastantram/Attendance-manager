@@ -10,89 +10,15 @@ import Modal from '../components/common/Modal.jsx';
 import { DAYS, SUBJECT_COLORS } from '../db/database.js';
 import { format } from 'date-fns';
 
-/* ── OCR parsing helpers ─────────────────────────────────────── */
-function parseTimetableText(text, existingSubjects) {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  const timeRegex = /(\d{1,2})[:\.](\d{2})\s*(am|pm|AM|PM)?/gi;
-  const dayRegex = /\b(mon|tue|wed|thu|fri|sat|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/gi;
+import { parseWithGroq } from '../utils/groqVision.js';
 
-  const parsed = [];
-  const subjectNames = new Set(existingSubjects.map(s => s.name.toLowerCase()));
-
-  for (const line of lines) {
-    const times = [];
-    let match;
-    const re = new RegExp(timeRegex.source, 'gi');
-    while ((match = re.exec(line)) !== null) {
-      let h = parseInt(match[1]);
-      const m = parseInt(match[2]);
-      const period = match[3]?.toLowerCase();
-      if (period === 'pm' && h < 12) h += 12;
-      if (period === 'am' && h === 12) h = 0;
-      times.push(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`);
-    }
-
-    const dayMatch = line.match(dayRegex);
-    const day = dayMatch ? normDay(dayMatch[0]) : null;
-
-    // Try to extract subject name — remaining words after time/day info
-    let subName = line
-      .replace(timeRegex, '')
-      .replace(dayRegex, '')
-      .replace(/[-–—:,|]/g, ' ')
-      .trim()
-      .replace(/\s+/g, ' ');
-
-    if (subName.length > 2 && subName.length < 50) {
-      parsed.push({
-        subjectName: subName,
-        day: day,
-        startTime: times[0] || null,
-        endTime: times[1] || null,
-        confidence: calcConf(subName, times, day),
-        isKnown: subjectNames.has(subName.toLowerCase())
-      });
-    }
-  }
-
-  return parsed.filter(p => p.confidence > 0.2);
-}
-
-function parseAttendanceText(text, existingSubjects) {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  const numRe = /\d+/g;
-  const parsed = [];
-
-  for (const line of lines) {
-    const nums = line.match(numRe)?.map(Number) || [];
-    if (nums.length < 2) continue;
-
-    const subName = line.replace(numRe, '').replace(/[-–—:|,\/]/g, ' ').trim().replace(/\s+/g,' ');
-    if (subName.length < 2 || subName.length > 60) continue;
-
-    // Assume format: "Subject  Total  Attended" or "Subject  Attended/Total"
-    const held     = nums.length >= 2 ? Math.max(nums[0], nums[1]) : nums[0];
-    const attended = nums.length >= 2 ? Math.min(nums[0], nums[1]) : nums[0];
-    const pct = held > 0 ? Math.round((attended/held)*100) : 0;
-
-    parsed.push({ subjectName: subName, held, attended, missed: held - attended, pct });
-  }
-
-  return parsed.filter(p => p.held > 0 && p.attended >= 0 && p.attended <= p.held);
-}
-
-function normDay(d) {
-  const map = { mon:0, monday:0, tue:1, tuesday:1, wed:2, wednesday:2, thu:3, thursday:3, fri:4, friday:4, sat:5, saturday:5 };
-  return map[d.toLowerCase()] ?? null;
-}
-
-function calcConf(name, times, day) {
-  let score = 0.3;
-  if (times.length >= 1) score += 0.3;
-  if (times.length >= 2) score += 0.1;
-  if (day !== null) score += 0.2;
-  if (name.split(' ').length <= 4) score += 0.1;
-  return Math.min(score, 1);
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = error => reject(error);
+  });
 }
 
 /* ── Main Scan Page ─────────────────────────────────────────── */
@@ -114,7 +40,6 @@ export default function ScanPage() {
   const [mode, setMode] = useState('choose'); // choose | camera | processing | results
   const [scanType, setScanType]     = useState('timetable'); // timetable | attendance | subjects
   const [capturedImg, setCapturedImg] = useState(null);
-  const [ocrText, setOcrText]       = useState('');
   const [parsedData, setParsedData] = useState([]);
   const [selected, setSelected]     = useState({});
   const [applying, setApplying]     = useState(false);
@@ -175,41 +100,27 @@ export default function ScanPage() {
   };
 
   const runOCR = async (imageData) => {
+    if (!settings.groqApiKey) {
+      addToast('Please enter your Groq API Key in Settings first.', 'error');
+      return;
+    }
+
     setMode('processing');
     setOcring(true);
     try {
-      const { createWorker } = await import('tesseract.js');
-      const worker = await createWorker('eng', 1, {
-        logger: () => {} // suppress logs
-      });
-      await worker.setParameters({
-        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .:-/|()%'
-      });
-      const { data: { text } } = await worker.recognize(imageData);
-      await worker.terminate();
-
-      setOcrText(text);
-      parseResults(text);
+      const data = await parseWithGroq(imageData, subjects, settings.groqApiKey, scanType);
+      
+      setParsedData(data);
+      // Pre-select all items
+      const sel = {};
+      data.forEach((_, i) => { sel[i] = true; });
+      setSelected(sel);
+      setMode('results');
     } catch (err) {
-      addToast('OCR failed: ' + err.message, 'error');
+      addToast('Scan failed: ' + err.message, 'error');
       setMode('choose');
     }
     setOcring(false);
-  };
-
-  const parseResults = (text) => {
-    let data = [];
-    if (scanType === 'timetable' || scanType === 'subjects') {
-      data = parseTimetableText(text, subjects);
-    } else if (scanType === 'attendance') {
-      data = parseAttendanceText(text, subjects);
-    }
-    setParsedData(data);
-    // Pre-select all items with decent confidence
-    const sel = {};
-    data.forEach((_, i) => { sel[i] = true; });
-    setSelected(sel);
-    setMode('results');
   };
 
   const applyResults = async () => {
@@ -271,7 +182,6 @@ export default function ScanPage() {
 
   const reset = () => {
     setCapturedImg(null);
-    setOcrText('');
     setParsedData([]);
     setSelected({});
     setMode('choose');
@@ -480,15 +390,7 @@ export default function ScanPage() {
               )}
             </div>
 
-            {/* Raw OCR text (collapsible) */}
-            <details className="card" style={{ marginBottom:12 }}>
-              <summary style={{ fontSize:'0.8125rem', fontWeight:600, color:'var(--text-2)', cursor:'pointer' }}>
-                Raw OCR Text
-              </summary>
-              <pre style={{ marginTop:8, fontSize:'0.6875rem', color:'var(--text-3)', whiteSpace:'pre-wrap', maxHeight:120, overflow:'auto' }}>
-                {ocrText || '(empty)'}
-              </pre>
-            </details>
+
 
             <div style={{ display:'flex', gap:8 }}>
               <button className="btn btn-secondary" style={{ flex:1 }} onClick={reset} id="scan-retry-btn">
