@@ -1,10 +1,10 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Sun, Moon, Monitor, Trash2, Calendar, Info } from 'lucide-react';
+import { Sun, Moon, Monitor, Trash2, Upload, FileSpreadsheet, Loader } from 'lucide-react';
 import useSettingsStore from '../stores/useSettingsStore.js';
 import useSubjectStore from '../stores/useSubjectStore.js';
 import useToastStore from '../stores/useToastStore.js';
-import { exportJSON, importJSON, exportCSV } from '../utils/exportUtils.js';
+import { exportJSON, importJSON, exportCSV, importAttendanceMultiFormat } from '../utils/exportUtils.js';
 import db from '../db/database.js';
 
 export default function SettingsPage() {
@@ -13,8 +13,33 @@ export default function SettingsPage() {
   const loadSettings  = useSettingsStore(s => s.loadSettings);
   const loadSubjects  = useSubjectStore(s => s.loadSubjects);
   const addToast      = useToastStore(s => s.addToast);
+  const [importing, setImporting] = useState(false);
+  const multiImportRef = useRef(null);
 
   useEffect(() => { loadSettings(); }, []);
+
+  const handleMultiFormatImport = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const result = await importAttendanceMultiFormat(file);
+      loadSubjects();
+      let msg = `✅ Imported ${result.imported} records`;
+      if (result.skipped > 0) msg += `, skipped ${result.skipped}`;
+      if (result.createdSubjects && result.createdSubjects.length > 0) {
+        msg += `. ✨ Added subjects: ${result.createdSubjects.join(', ')}`;
+      } else if (result.missingSubjects && result.missingSubjects.length > 0) {
+        msg += `. ⚠️ Subjects not found: ${result.missingSubjects.join(', ')}`;
+      }
+      addToast(msg, result.imported > 0 ? 'success' : 'warning');
+    } catch (err) {
+      addToast('Import failed: ' + err.message, 'error');
+    } finally {
+      setImporting(false);
+      e.target.value = '';
+    }
+  };
 
   const handleReset = async () => {
     if (!confirm('Delete ALL data? This cannot be undone.')) return;
@@ -137,7 +162,7 @@ export default function SettingsPage() {
             Export Report (CSV)
           </button>
           <label className="btn btn-secondary w-full" style={{ cursor:'pointer' }} id="import-label">
-            Import Backup
+            Import Backup (JSON)
             <input type="file" accept=".json" style={{ display:'none' }} onChange={async e => {
               const f = e.target.files[0]; if(!f) return;
               try { const r = await importJSON(f); loadSubjects(); addToast(`Imported ${r.counts.subjects} subjects`,'success'); }
@@ -145,6 +170,63 @@ export default function SettingsPage() {
               e.target.value='';
             }}/>
           </label>
+        </div>
+      </Section>
+
+      {/* ── UPLOAD ATTENDANCE ── Multi-format ──────────────────── */}
+      <Section title="📤 Upload Attendance" delay={0.12} accent>
+        <p style={{ fontSize:'0.75rem', color:'var(--text-2)', marginBottom:12, lineHeight:1.6 }}>
+          Upload your attendance data from <b>any format</b> — CSV, Excel (.xlsx / .xls), or JSON.
+          Each row should have columns: <code style={{ background:'var(--accent-bg)', borderRadius:4, padding:'1px 5px' }}>Date, Subject, Status, Extra</code>
+        </p>
+
+        {/* Format hints */}
+        <div style={{
+          display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:6, marginBottom:12
+        }}>
+          {[
+            { fmt:'CSV', icon:'📄', hint:'.csv' },
+            { fmt:'Excel', icon:'📊', hint:'.xlsx/.xls' },
+            { fmt:'JSON', icon:'🗂️', hint:'.json' },
+          ].map(({ fmt, icon, hint }) => (
+            <div key={fmt} style={{
+              background:'var(--accent-bg)', borderRadius:10, padding:'8px 10px',
+              textAlign:'center', fontSize:'0.6875rem', color:'var(--text-2)'
+            }}>
+              <div style={{ fontSize:18, marginBottom:2 }}>{icon}</div>
+              <div style={{ fontWeight:700, color:'var(--text-1)' }}>{fmt}</div>
+              <div style={{ color:'var(--text-3)' }}>{hint}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Upload button */}
+        <label
+          className="btn w-full"
+          style={{
+            cursor: importing ? 'not-allowed' : 'pointer',
+            opacity: importing ? 0.7 : 1,
+            display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+            background:'var(--primary)', color:'#fff',
+          }}
+          id="multi-import-label"
+        >
+          {importing
+            ? <><Loader size={16} style={{ animation:'spin 1s linear infinite' }}/> Importing…</>
+            : <><FileSpreadsheet size={16}/> Choose Attendance File</>
+          }
+          <input
+            ref={multiImportRef}
+            type="file"
+            accept=".csv,.xlsx,.xls,.json"
+            style={{ display:'none' }}
+            disabled={importing}
+            onChange={handleMultiFormatImport}
+          />
+        </label>
+
+        <div style={{ fontSize:'0.6875rem', color:'var(--text-3)', marginTop:8 }}>
+          💡 Subject names in the file must match exactly with subjects added in this app.
         </div>
       </Section>
 

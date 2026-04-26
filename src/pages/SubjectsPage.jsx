@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Trash2, Edit3, MoreVertical, BookOpen, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Trash2, Edit3, MoreVertical, BookOpen, ChevronDown, ChevronUp, Upload, Loader } from 'lucide-react';
 import useSubjectStore from '../stores/useSubjectStore.js';
 import useSettingsStore from '../stores/useSettingsStore.js';
 import useTimetableStore from '../stores/useTimetableStore.js';
@@ -8,6 +8,7 @@ import useToastStore from '../stores/useToastStore.js';
 import Modal from '../components/common/Modal.jsx';
 import SubjectForm from '../components/subject/SubjectForm.jsx';
 import { calcInsight, calcFutureProjection } from '../utils/attendance.js';
+import { importAttendanceMultiFormat } from '../utils/exportUtils.js';
 import db from '../db/database.js';
 
 export default function SubjectsPage() {
@@ -25,6 +26,8 @@ export default function SubjectsPage() {
   const [menuOpen,    setMenuOpen]    = useState(null);
   const [expanded,    setExpanded]    = useState(null);
   const [allRecords,  setAllRecords]  = useState([]);
+  const [importing,   setImporting]   = useState(false);
+  const multiImportRef = useRef(null);
 
   useEffect(() => { loadSubjects(); loadSlots(); }, []);
 
@@ -75,12 +78,54 @@ export default function SubjectsPage() {
     setMenuOpen(null);
   };
 
+  const handleMultiFormatImport = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const result = await importAttendanceMultiFormat(file);
+      await loadSubjects();
+      // Reload stats
+      const allRec = await db.attendanceRecords.toArray();
+      setAllRecords(allRec);
+      
+      let msg = `✅ Imported ${result.imported} records`;
+      if (result.skipped > 0) msg += `, skipped ${result.skipped}`;
+      if (result.createdSubjects && result.createdSubjects.length > 0) {
+        msg += `. ✨ Added subjects: ${result.createdSubjects.join(', ')}`;
+      }
+      addToast(msg, result.imported > 0 ? 'success' : 'warning');
+    } catch (err) {
+      addToast('Import failed: ' + err.message, 'error');
+    } finally {
+      setImporting(false);
+      e.target.value = '';
+    }
+  };
+
   return (
     <div className="page" style={{ paddingTop: 0 }}>
       <div className="page-top">
         <div>
           <h1 className="page-title">Subjects</h1>
           <p className="page-sub">{subjects.length} subject{subjects.length !== 1 ? 's' : ''}</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <label 
+            className="btn btn-secondary btn-sm" 
+            style={{ cursor: importing ? 'not-allowed' : 'pointer', opacity: importing ? 0.7 : 1 }}
+          >
+            {importing ? <Loader size={14} className="spin" /> : <Upload size={14} />}
+            <span style={{ marginLeft: 4 }}>Import</span>
+            <input 
+              ref={multiImportRef} 
+              type="file" 
+              accept=".csv,.xlsx,.xls,.json" 
+              style={{ display: 'none' }} 
+              disabled={importing} 
+              onChange={handleMultiFormatImport} 
+            />
+          </label>
         </div>
       </div>
 
