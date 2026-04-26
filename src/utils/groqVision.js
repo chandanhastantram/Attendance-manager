@@ -1,30 +1,57 @@
-export async function parseTimetableWithGroq(base64Image, subjects, apiKey) {
+export async function parseWithGroq(base64Image, subjects, apiKey, scanType = 'timetable') {
   if (!apiKey) {
     throw new Error('Groq API Key is missing. Please add it in Settings.');
   }
 
   const subjectNames = subjects.map(s => s.name);
-  const prompt = `You are a highly accurate OCR and timetable parser.
+  
+  let prompt = '';
+  if (scanType === 'timetable') {
+    prompt = `You are a highly accurate OCR and timetable parser.
 I am providing an image of a class timetable.
-Extract the class schedule and return ONLY a raw JSON array of objects. No markdown formatting, no backticks, no explanations.
+Extract the class schedule and return ONLY a raw JSON array of objects. No markdown formatting.
 
 Here are the subjects I am enrolled in:
 ${subjectNames.join(', ')}
 
-For every class you find in the image that roughly matches one of these subjects, extract it.
-
 The JSON array must contain objects with exactly these keys:
 - "subjectName": The exact subject name from my list that matches the class.
-- "dayIndex": An integer from 0 to 6 representing the day of the week (0 = Monday, 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday, 5 = Saturday, 6 = Sunday).
-- "startTime": The start time in 24-hour HH:MM format (e.g., "09:00", "14:30").
-- "endTime": The end time in 24-hour HH:MM format (e.g., "10:00", "15:30"). If no end time is specified, assume it is 1 hour after the start time.
+- "dayIndex": An integer from 0 to 6 representing the day of the week (0 = Monday).
+- "startTime": The start time in 24-hour HH:MM format (e.g., "09:00").
+- "endTime": The end time in 24-hour HH:MM format.
 
-Example valid output:
+Example:
 [
   { "subjectName": "${subjectNames[0] || 'Math'}", "dayIndex": 0, "startTime": "09:00", "endTime": "10:00" }
-]
+]`;
+  } else if (scanType === 'attendance') {
+    prompt = `You are an OCR attendance parser.
+Extract the attendance records from the image and return ONLY a raw JSON array of objects. No markdown formatting.
 
-Return ONLY the JSON array.`;
+The JSON array must contain objects with exactly these keys:
+- "subjectName": The exact name of the subject.
+- "held": Total number of classes held (integer).
+- "attended": Total number of classes attended (integer).
+- "pct": Attendance percentage (integer 0-100).
+
+Example:
+[
+  { "subjectName": "Math", "held": 20, "attended": 18, "pct": 90 }
+]`;
+  } else if (scanType === 'subjects') {
+    prompt = `You are an OCR parser.
+Extract the list of subjects/courses from the image and return ONLY a raw JSON array of objects. No markdown formatting.
+
+The JSON array must contain objects with exactly these keys:
+- "subjectName": The extracted name of the subject/course.
+
+Example:
+[
+  { "subjectName": "Advanced Mathematics" }
+]`;
+  }
+
+  prompt += '\n\nReturn ONLY the JSON array.';
 
   try {
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -67,24 +94,38 @@ Return ONLY the JSON array.`;
       throw new Error('Groq did not return an array.');
     }
 
-    // Map back to full slot objects
     const results = [];
     const DAY_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
     for (const item of parsedJson) {
-      const matchedSubject = subjects.find(s => s.name.toLowerCase() === item.subjectName.toLowerCase());
-      if (matchedSubject) {
+      if (scanType === 'timetable') {
+        const matchedSubject = subjects.find(s => s.name.toLowerCase() === item.subjectName.toLowerCase());
         results.push({
           id: `groq-${Date.now()}-${Math.random()}`,
-          subjectId: matchedSubject.id,
-          subjectName: matchedSubject.name,
-          subjectColor: matchedSubject.color,
+          subjectId: matchedSubject?.id || null,
+          subjectName: matchedSubject?.name || item.subjectName,
+          subjectColor: matchedSubject?.color || '#cccccc',
           day: item.dayIndex,
           dayName: DAY_SHORT[item.dayIndex] || 'Unknown',
           startTime: item.startTime,
           endTime: item.endTime,
           room: '',
           confirmed: true,
+          isKnown: !!matchedSubject
+        });
+      } else if (scanType === 'attendance') {
+        results.push({
+          subjectName: item.subjectName,
+          held: item.held,
+          attended: item.attended,
+          missed: item.held - item.attended,
+          pct: item.pct,
+          isKnown: subjects.some(s => s.name.toLowerCase() === item.subjectName.toLowerCase())
+        });
+      } else if (scanType === 'subjects') {
+        results.push({
+          subjectName: item.subjectName,
+          isKnown: subjects.some(s => s.name.toLowerCase() === item.subjectName.toLowerCase())
         });
       }
     }
